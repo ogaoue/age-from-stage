@@ -1,0 +1,1418 @@
+
+#######################################################
+## PART I -- Age-from-stage in constant environment ###
+#######################################################
+
+## Original MATLAB code: May 2008, adapted from Age from Stage 
+## Carol Horvitz's MATLAB code "mat6agefromstage_08.m"
+## Workshop: Oct 2007, Rostock, Germany.
+
+## Converted to R by Orou Gaoue, Dec 19, 2009
+## e-mail: ogaoue@hawaii.edu
+## Modified OG, Feb 9, 2010 to make it into a function, 
+## Revised by OG, Feb 17, 2010 to add age at maturity 
+
+## Revised by OG, April 19 2010 to add the elasticity of life                 
+## expectancy using Caswell (2009; Oikos) approach
+
+## Revised by OG, September 6, 2010 to add elasticity of 
+## (remaining) life expectancy following Steiner & Tuljapurkar (2010). In addition, I modified the use of return() in the functions because with R 2.11, that function was deprecated. Instead of: return(pred, se), use: return(list(pred=pred, se=se))
+
+## Revised by OG, Januar 17, 2011
+
+## This script accompanied Gaoue et al (2013) Journal of Ecology and use age-from-stage models to estimate life history parameters in a constant environment. It created a big function that takes as argument your T matrix (as in A=T + F decomposition) and generate the following output.
+
+## Outputs: #####################################################
+## Life expectancy (stage-specific): mean, variance, sd and cv
+## Age specific survivorship curves
+## Age specific mortality trajectory
+## Mean age at maturity and stage specific reproductve ages
+## Sensitivity and Elasticity of life expectancy
+################################################################
+
+## Clear all
+rm(list=ls(all=TRUE)) 
+
+## To prepare: 
+## 1) Separate production of new individuals (R) from fates of 
+## surviving individuals (Q); A= Q + R 
+## 2) Get rid of immortal stages: make column sums of Q be <1
+
+## Loading the packages that I need: "popbio" to be able to use the function "splitA" to split the matrix A into Q and R, and package 'Biodem", has function mtx.exp for matrix exponentiation
+
+library(popbio)
+library(Biodem) 
+library(MASS)
+library(msm)
+library(plotrix)
+
+################### MODULE 1 ###############################
+## Data manipulation to get the matrices in and get Qs #####
+############################################################
+
+## Importing the data file that has the matrices
+qs<-read.table("/Users/ogaoue/Desktop/Y-2011/Khaya longevity/khaya_moist_dry.txt")
+
+## Defining the matrices from the .txt file
+## Moist region matrices
+m_low<-as.matrix(qs[1:5, 1:5])
+m_med<-as.matrix(qs[11:15, 1:5])
+m_high<-as.matrix(qs[21:25, 1:5])
+
+## Dry region matrices
+d_low<-as.matrix(qs[6:10, 1:5])
+d_med<-as.matrix(qs[16:20, 1:5])
+d_high<-as.matrix(qs[26:30, 1:5])
+
+## Spliting the matrices A= Q + R and keeping Q
+q_m1<-splitA(m_low, r=1, c=-1)$T
+q_m2<-splitA(m_med, r=1, c=-1)$T
+q_m3<-splitA(m_high, r=1, c=-1)$T
+
+q_d1<-splitA(d_low, r=1, c=-1)$T
+q_d2<-splitA(d_med, r=1, c=-1)$T
+q_d3<-splitA(d_high, r=1, c=-1)$T
+
+###############################################################
+## MODULE 2: LIFE EXPECTANCY, MORTALITY, AGE AT MATURITY     ##
+############################################################### 
+## I made a global function "biodemog", that takes a "q" matrix as the parameter and yield lx, Ux, mu, plateau, lifeexp and its SD.
+
+nstages<-5
+maxage<-200 # set the number of ages to consider
+ages<-1:maxage # a sequence of ages from 1 to maxage
+
+biodemog<-function(q){
+## q<-moist[[i]]
+nstages<-nrow(q) # number of stages of the matrix q
+
+## Create matrix to receive the outputs
+Nzero<-matrix(0, nstages, 1)
+Nzero[1,1]<-1
+Nx<-matrix(0, nstages, maxage)
+Qx<-array(0, dim=c(nstages, nstages, maxage))
+
+## SURVIVORSHIP Lx
+for (x in 1:maxage){
+	Nx[,x]<-mtx.exp(q,x)%*%Nzero # pop vector at each age
+	Qx[,,x]<-mtx.exp(q,x) # The powers of Q gives the same info
+	}
+	
+Nx2<-drop(Qx[,1,]) # squeeze() in Matlab: all rows, col 1, all age
+lx<-apply(Nx, 2, sum) # Survivorship
+
+## Find the stage structure at each age as a proportion
+Ux<-matrix(0, nstages, maxage)
+for (x in 1:maxage){
+	Ux[,x]<-Nx[,x]/lx[x]
+	}
+	
+## AGE SPECIFIC MORTALITY (TRAJECTORY)
+lxplus1<-lx[2:maxage] # or lx[-1]
+mu<-log(lx[1:(maxage-1)]) - log(lxplus1)
+plateau<- - log(max(abs(eigen(q)$values)))  # mortality plateau: I used the abs of the max eigenvalue, b/c they are complex numbers
+
+## To get the distribution of age at death
+deaths<-lx[1:(maxage -1)] - lxplus1
+deaths<-deaths/sum(deaths)
+
+## To get the one period survival
+oneperiodsurvival<-apply(q, 2, sum) # age-specific survival
+
+## FUNDAMENTAL MATRIX AND LIFE EXPECTANCY
+I<-diag(1, ncol(q))  # Identity matrix of dimension q
+N<-solve(I-q) # That is (I-q)^-1 (Caswell 2001:118)
+
+## N is the fundamental matrix,.. how long an organism in each stage will spend in each stage. IF newborns are in stage 1 (otherwise this is NOT correct), then the first element of lifeexp will be the expected lifespan of newborns. The expected lifespan of individuals in stage i will be:
+# lifespan<-apply(N[,i], 2, sum)
+
+lifeexp<-apply(N, 2, sum) # Expected lifespan of ind in each stage
+lifeexp_var<-apply((2*mtx.exp(N,2) - N), 2, sum) - lifeexp*lifeexp
+## see Caswell 2001:119 for variance of life expectancy
+lifeexp_sd<-sqrt(lifeexp_var) # SD
+lifeexp_cv<-lifeexp_sd/lifeexp # CV
+
+
+## AGE AT FIRST REPRODUCTION
+## Set key matrices to use later
+realrep<-c(4,5) # The reproductive stages for Khaya are 4 and 5
+I<-diag(1, ncol(q)) # Identity matrix
+e<-rep(1, ncol(q)) # A vector of one used to sum matrix
+
+## Keep in mind that what we need to do is to find the transient time to reach reproductive stage before dying. So we have 2 absorbing states: death and reproduction, to define an absorbing matrix M=rbind(m1, m2)
+
+## We first need to define the mortality prob matrix. m1 is one of the absorbing state. 
+
+m1<-rep(1, ncol(q)) - colSums(q)
+
+## Second we need to create the second absorbing state by making the column of reproductive stages 0 in the transient matrix q (see Caswell: 125)
+
+m2<-rep(0, ncol(q)) # We create a vector of 0
+m2[realrep]<-1 # and replace 4th and 5th values by 1 here.
+
+## The same way we need to make the 4th and 5th values of vector m1 (mortality) equal 0. You need to realize here that we are trying to get a column sum of 1 for the Markov chain P (see Caswell: 124 and 125, eqn 5.55). 
+
+m1[realrep]<-0
+
+## Now we can create our absorbing matrix M by combing vector m1 and m2 using rbind
+
+M<-rbind(m1, m2)
+
+## The Markov chain P is composed of transient matrix q, absorbing matrix M a matrix of zeros and idenity matrix I. The column sum of P must be equal to ones. To get that we alter the transient matrix q so that the sums of column "realrep" (that is 4th and 5th) are zeros (remember these columns are = 1 for M so the total q+M = 1) 
+
+q[,realrep]<-0
+
+## Let's just put the Markov chain P together. That is eqn 5.55 in Caswell:125
+
+P<-cbind(rbind(q,M), rbind(matrix(0, nrow(q), nrow(M)), diag(1, nrow(M))))
+
+## To get the probablility of absorption in reproduced-before-dying state, we calculate B, eq 5.51 Caswell:124: B=M(I-T)^-1. b2, the second row of B has the proabilities of reproducing before death.
+
+B=M%*%solve(I-q)
+b2<-B[2,]
+
+## if some values of b2=0 then there is a problem. Caswell:125 suggest that the zeros be replaced by abitrary values; he used 1
+index<-b2==0
+b2[index]<-1
+
+## Get the conditional transition matrix Tc (eqn 5.53). diag(b2) here is a square matrix with its diagonal as the values of b2.
+
+Tc<-diag(b2, length(b2))%*%q%*%solve(diag(b2, length(b2)))
+
+## In Caswell:125, he suggests that post reproduction been ignored, so we will make that column = 0
+
+Tc[5,5]<-0
+
+## To get the MEAN remaining time to reproductive age, and the mean age at maturity.
+
+## time_to_rep<-t(e)%*%solve(I-Tc) ## You'd also just use column sum
+time_to_rep<-apply(solve(I-Tc), 2, sum)
+mean_age_firstrep<-time_to_rep[1] ## This is the age at maturity
+
+## Calculate the VARIANCE of remaining time to maturity using Caswell:113, eqn 5.12 (e'(2N^2 - N) - e'N *e'N). We will write the fundamental matrix NTc
+
+library(Biodem)
+NTc<-solve(I-Tc)
+var_timeto_rep<-t(e)%*%(2*mtx.exp(NTc,2) - NTc) - t(e)%*%NTc*t(e)%*%NTc
+
+## You can also use the apply function to sum
+## var_timeto_rep<-apply((2*mtx.exp(NTc,2) - NTc), 2, sum) - apply(NTc, 2, sum)*apply(NTc, 2, sum)
+
+timeto_rep_sd<-sqrt(var_timeto_rep) # SD
+timeto_rep_cv<-timeto_rep_sd/time_to_rep ## CV
+
+return(list(lx=lx, mu=mu, plateau=plateau, lifeexp=lifeexp, lifeexp_sd=lifeexp_sd,  lifeexp_cv=lifeexp_cv, deaths=deaths, Ux=Ux, time_to_rep=time_to_rep, timeto_rep_sd=timeto_rep_sd, timeto_rep_cv=timeto_rep_cv, mean_age_firstrep=mean_age_firstrep))
+
+} ################# end of function
+
+## Using function "biodemog" on the q matrices for moist and dry so that I can index within the results the parameters that I need to make the graphs.
+
+m1<-biodemog(q_m1)
+m2<-biodemog(q_m2)
+m3<-biodemog(q_m3)
+d1<-biodemog(q_d1) 
+d2<-biodemog(q_d2)
+d3<-biodemog(q_d3)
+
+
+##############################################################
+## MODULE 3: FIGURES FOR CONSTANT ENVIRONMENT 	           ###
+##############################################################
+par(ask=TRUE) ## This is to keep all the fig on the screen
+
+## FIGURE 2.1: Age at first reproduction (for seeldings only)*****
+
+## Mean
+agerep<-matrix(c(m1$time_to_rep[1], m2$time_to_rep[1], m3$time_to_rep[1], d1$time_to_rep[1], d2$time_to_rep[1], d3$time_to_rep[1]), 3, 2, byrow=F)
+
+lifeexp<-matrix(c(m1$lifeexp[1], m2$lifeexp[1], m3$lifeexp[1], d1$lifeexp[1], d2$lifeexp[1], d3$lifeexp[1]), 3,2, byrow=F)
+
+rmlifeexp<-matrix(c(m1$lifeexp[4], m2$lifeexp[4], m3$lifeexp[4], d1$lifeexp[4], d2$lifeexp[4], d3$lifeexp[4]), 3,2, byrow=F)
+
+dimnames(agerep)<-dimnames(lifeexp)<-dimnames(rmlifeexp)<-list(c("Low", "Medium", "High"), c("Moist", "Dry"))
+
+## CV
+agerepcv<-matrix(c(m1$timeto_rep_cv[1], m2$timeto_rep_cv[1], m3$timeto_rep_cv[1], d1$timeto_rep_cv[1], d2$timeto_rep_cv[1], d3$timeto_rep_cv[1]), 3, 2, byrow=F)
+
+lifeexpcv<-matrix(c(m1$lifeexp_cv[1], m2$lifeexp_cv[1], m3$lifeexp_cv[1], d1$lifeexp_cv[1], d2$lifeexp_cv[1], d3$lifeexp_cv[1]), 3,2, byrow=F)
+
+rmlifeexpcv<-matrix(c(m1$lifeexp_cv[4], m2$lifeexp_cv[4], m3$lifeexp_cv[4], d1$lifeexp_cv[4], d2$lifeexp_cv[4], d3$lifeexp_cv[4]), 3,2, byrow=F)
+
+dimnames(agerepcv)<-dimnames(lifeexpcv)<-dimnames(rmlifeexpcv)<-list(c("Low", "Medium", "High"), c("Moist", "Dry"))
+
+region<-c("Moist", "Dry")
+
+op<-par(mfrow=c(2,3))
+
+par(mar=c(5,5,1,1))
+barplot(t(agerep), beside=T, cex.lab=1.3, axis.lty=1, las=1, xlab="", ylab="Age at first reproduction (yr)", col=c("black","white"), ylim=c(0, max(agerep)+3)); 
+box(); mtext("(a)", side=3, adj=0)
+
+barplot(t(lifeexp), beside=T, cex.lab=1.3, axis.lty=1, las=1, xlab="", ylab="Life expectancy (yr)", col=c("black","white"), ylim=c(0, max(lifeexp)+1), legend.text=region, args.legend=list(x="topleft", bg="white", bty="n"),); 
+box(); mtext("(b)", side=3, adj=0)
+
+barplot(t(rmlifeexp), beside=T, cex.lab=1.3, axis.lty=1, las=1, xlab="", ylab="Conditional life expectancy (yr)", col=c("black","white"), ylim=c(0, max(rmlifeexp)+2)); 
+box(); mtext("(c)", side=3, adj=0)
+
+## CV
+par(mar=c(5,5,1,1))
+barplot(t(agerepcv), beside=T, cex.lab=1.3, axis.lty=1, las=1, xlab="", ylab="CV of Age at first reproduction", col=c("black","white"), ylim=c(0, max(agerepcv)+0.1)); 
+box(); mtext("(d)", side=3, adj=0)
+
+barplot(t(lifeexpcv), beside=T, cex.lab=1.3, axis.lty=1, las=1, xlab="", ylab="CV of Life expectancy", col=c("black","white"), ylim=c(0, max(lifeexpcv)+0.1)); 
+box(); mtext("(e)", side=3, adj=0)
+
+barplot(t(rmlifeexpcv), beside=T, cex.lab=1.3, axis.lty=1, las=1, xlab="", ylab="CV of Conditional life expectancy", col=c("black","white"), ylim=c(0, max(rmlifeexpcv)+0.1)); 
+box(); mtext("(f)", side=3, adj=0)
+
+par(oma=c(5, 5, 0, 0)) ## outer margin (bottom, left, top, right)
+title(xlab=expression(paste(italic("Khaya senegalensis "), "harvest intensity")), ylab="", outer=T, cex.lab=1.2)
+
+par(op)
+
+
+
+################################################################
+## PART II: FUNCTION FOR SENSITIVITY, ELASTICITY OF LONGEVITIES
+################################################################
+
+## A) THE CASWELL APPROACH *************************************
+
+## OG, April 19, 2010
+## Details: You provide the whole natrix A and the function split ## it to get the T, calculate the lower-level parameters "theta", ## derive T wrt to theta and calculate the sensitivity and 
+## elasticity of the life expectancy wrt to theta.
+
+ElastC<-function(mat){
+##############################################################
+## 1. Spliting the matrices A= Q + R and keeping Q
+
+library(popbio)
+q<-splitA(mat, r=1, c=-1)$T
+
+##############################################################
+## 2. Calculating vital rates from matrix element
+sigma1<-q[1,1] + q[2,1]
+gamma12<-q[2,1]/sigma1
+
+sigma2<-q[2,2] + q[3,2] + q[1,2]
+gamma23<-q[3,2]/sigma2
+rho21<-q[1,2]/sigma2
+
+sigma3<-q[3,3] + q[4,3] + q[2,3]
+gamma34<-q[4,3]/sigma3
+rho32<-q[2,3]/sigma3
+
+sigma4<-q[4,4] + q[5,4] + q[3,4]
+gamma45<-q[5,4]/sigma4
+rho43<-q[3,4]/sigma4
+	
+sigma5<-q[5,5] + q[4,5] ## changed Jan 17, 2011
+rho54<-q[4,5]/sigma5
+
+## Creating vectors of vital rates sigma, gamma and rho
+sigma<-c(sigma1, sigma2, sigma3, sigma4, sigma5)
+gamma<-c(gamma12, gamma23, gamma34, gamma45)
+rho<-c(rho21, rho32, rho43, rho54)
+	
+##############################################################
+## 3. PDE Khaya model TO GET dvecT/dtheta
+## based on CASWELL 2007. Ecol Letters
+
+## Theta: the list of vital rates
+theta<-c(sigma, gamma, rho)
+nstages<-ncol(q)
+
+## Creating arrays to receive the PDEs
+dads<-array(0, c(nstages,nstages,length(sigma)))
+dadg<-array(0, c(nstages,nstages,length(gamma)))
+dadr<-array(0, c(nstages,nstages,length(rho)))
+
+## PDE wrt sigma (n=5)
+rho1<-c(0, rho)
+
+for (i in 1:4){
+	dads[,,i]<-matrix(0, nstages, nstages)
+	dads[i-1,i,i]<-rho1[i]	               ## up-diagonals 
+	dads[i,i,i]<-(1-gamma[i]-rho1[i])     ## diagonals
+	dads[i+1,i,i]<-gamma[i]	           ## sub-diagonals
+}   
+
+dads[(nstages-1), nstages, nstages]<-rho1[nstages]
+dads[nstages, nstages, nstages]<-1-rho1[nstages]
+
+## PDE wrt gamma (n=4)
+for (i in 1:4){
+	dadg[,,i]<-matrix(0, nstages, nstages)
+	dadg[i,i,i]<- -sigma[i]	  ## diagonals
+	dadg[i+1,i,i]<-sigma[i]   ## sub-diagonals 
+}   
+
+## PDE wrt rho (n=4)
+for (i in 1:4){
+	dadr[,,i]<-matrix(0, nstages, nstages)
+	dadr[i-1,i,i-1]<- sigma[i]   ## up-diagonals
+	dadr[i,i,i-1]<- -sigma[i]	   ## diagonals
+}
+
+dadr[nstages,nstages,(nstages-1)]<- -sigma[nstages]
+dadr[(nstages-1),nstages,(nstages-1)]<-sigma[nstages]
+ 
+## Creating the s^2 x p matrix dvecT/dtheta
+PDEds<-matrix(c(dads),nstages^2,length(sigma))
+PDEdg<-matrix(c(dadg),nstages^2,length(gamma))
+PDEdr<-matrix(c(dadr),nstages^2,length(rho))
+
+dvecTdtheta<-cbind(PDEds, PDEdg, PDEdr)
+
+#################################################################
+## 4. Sensitivity and Elasticity of life expectancy
+
+## Fundamental matrix N and life expectancy
+I<-diag(nstages) # Identity matrix of dimension q
+e<-rep(1, nstages) # A vector of one used to sum matrix
+N<-solve(I-q) # That is (I-q)^-1 (Caswell 2001:118) *****
+lifeexp<-apply(N, 2, sum) # Expected lifespan of ind in each stage
+
+## Sensitivity and elasticity matrix: The calculation is based on eqn 39 (sensitivity) and 21 (elasticity) in Caswell 2009. Oikos 118:1763 - 1782.
+ 
+sensLifeexp<-kronecker(I, t(e))%*%kronecker(t(N), N)%*%dvecTdtheta
+elasLifeexp<-solve(diag(lifeexp))%*%sensLifeexp%*%diag(theta)
+
+## sensLifeexp and elastLifeexp here will give the sensitivity and elasticity of life expectancy(for stage1) and remaining life expectancies (stage 2 to ... nstages)
+
+## Labeling rows and columns
+vrnames<-c("s1", "s2", "s3", "s4", "s5", "g1", "g2", "g3", "g4", "r2", "r3", "r4", "r5");
+stages<-c("SDL", "SPL", "JUV", "AD1", "AD2");
+dimnames(elasLifeexp)<-list(stages, vrnames)
+dimnames(sensLifeexp)<-list(stages, vrnames)
+
+## Sensitivity and Elasticy of life expectancy (stage1) 
+sens<-sensLifeexp[1,]
+elast<-elasLifeexp[1,]
+
+return(list("Sensitivity"=sens, "Elasticity"=elast))
+
+} ### end of function ElastC
+
+
+## Applyng function ElastL.
+e1m<-ElastC(m_low)
+e2m<-ElastC(m_med)
+e3m<-ElastC(m_high)
+e1d<-ElastC(d_low) 
+e2d<-ElastC(d_med)
+e3d<-ElastC(d_high)
+
+ 
+## FIGURES 4 ***************************************************
+## Elastcity of life expectancy
+
+elast_m<-rbind(e1m$Elasticity, e2m$Elasticity, e3m$Elasticity)
+elast_d<-rbind(e1d$Elasticity, e2d$Elasticity, e3d$Elasticity)
+harvest<-c("Low", "Medium", "High")
+
+op<-par(mfrow=c(2,1))
+par(mar=c(5,5,1,1))
+barplot(elast_m, main="Moist", cex.lab=1.3, xlab="", ylab="", col=c("black", "grey", "white"), ylim=c(0, max(elast_m)+5), axis.lty=1, beside=T, las=1); abline(h=0, lty=1); 
+mtext("(a)", side=3, adj=0)
+
+par(mar=c(5,5,1,1)) 
+barplot(elast_d, main="Dry", cex.lab=1.3, xlab="", ylab="",col=c("black", "grey", "white"), ylim=c(0, max(elast_d)+5), axis.lty=1, beside=T, legend.text=harvest, args.legend=list(x="topright", bg="white", bty="n"), las=1); 
+abline(h=0, lty=1);
+mtext("(b)", side=3, adj=0)
+
+par(oma=c(5, 5, 0, 0)) ## outer margin (bottom, left, top, right)
+title(xlab=expression(paste("Lower level vital rates")), ylab="Elasticity of life expectancy", outer=T, cex.lab=1.2)
+
+par(op)
+
+
+## B) THE STEINER & TULJAPURAR APPROACH ************************
+
+## OG, September 6, 2010
+## Following: Steiner and Tuljapurkar (2010) 
+## I got the same results as w/ Caswell (2009)
+
+## Details: You provide the whole natrix A and the function split ## it to get the T, calculate the lower-level parameters "theta", ## derive T wrt to theta and calculate the sensitivity and 
+## elasticity of the life expectancy wrt to theta.
+
+elastST<-function (mat){
+##############################################################
+## 1. Spliting the matrices A= T + R and keeping T
+
+library(popbio)
+q<-splitA(mat, r=1, c=-1)$T
+
+##############################################################
+## 2. Calculating vital rates from matrix element
+sigma1<-q[1,1] + q[2,1]
+gamma12<-q[2,1]/sigma1
+
+sigma2<-q[2,2] + q[3,2] + q[1,2]
+gamma23<-q[3,2]/sigma2
+rho21<-q[1,2]/sigma2
+
+sigma3<-q[3,3] + q[4,3] + q[2,3]
+gamma34<-q[4,3]/sigma3
+rho32<-q[2,3]/sigma3
+
+sigma4<-q[4,4] + q[5,4] + q[3,4]
+gamma45<-q[5,4]/sigma4
+rho43<-q[3,4]/sigma4
+	
+sigma5<-q[5,5] + q[4,5]  ### **** changed Jan 17, 11
+rho54<-q[4,5]/sigma5
+
+## Creating vectors of vital rates sigma, gamma and rho
+sigma<-c(sigma1, sigma2, sigma3, sigma4, sigma5)
+gamma<-c(gamma12, gamma23, gamma34, gamma45)
+rho<-c(rho21, rho32, rho43, rho54)
+	
+##############################################################
+## 3. PDE Khaya model TO GET dvecT/dtheta
+## based on CASWELL 2007. Ecol Letters
+
+## Theta: the list of vital rates
+theta<-c(sigma, gamma, rho)
+nstages<-ncol(q)
+
+## Creating arrays to receive the PDEs
+dads<-array(0, c(nstages,nstages,length(sigma)))
+dadg<-array(0, c(nstages,nstages,length(gamma)))
+dadr<-array(0, c(nstages,nstages,length(rho)))
+## PDE wrt sigma (n=5)
+rho1<-c(0, rho)
+
+for (i in 1:4){
+	dads[,,i]<-matrix(0, nstages, nstages)
+	dads[i-1,i,i]<-rho1[i]	               ## up-diagonals 
+	dads[i,i,i]<-(1-gamma[i]-rho1[i])     ## diagonals
+	dads[i+1,i,i]<-gamma[i]	           ## sub-diagonals
+}   
+
+dads[(nstages-1), nstages, nstages]<-rho1[nstages]
+dads[nstages, nstages, nstages]<-1-rho1[nstages]
+
+## PDE wrt gamma (n=4)
+for (i in 1:4){
+	dadg[,,i]<-matrix(0, nstages, nstages)
+	dadg[i,i,i]<- -sigma[i]	  ## diagonals
+	dadg[i+1,i,i]<-sigma[i]   ## sub-diagonals 
+}   
+
+## PDE wrt rho (n=4)
+for (i in 1:4){
+	dadr[,,i]<-matrix(0, nstages, nstages)
+	dadr[i-1,i,i-1]<- sigma[i]   ## up-diagonals
+	dadr[i,i,i-1]<- -sigma[i]	   ## diagonals
+}
+
+dadr[nstages,nstages,(nstages-1)]<- -sigma[nstages]
+dadr[(nstages-1),nstages,(nstages-1)]<-sigma[nstages]
+ 
+## Creating the s^2 x p matrix dvecT/dtheta
+PDEds<-matrix(c(dads),nstages^2,length(sigma))
+PDEdg<-matrix(c(dadg),nstages^2,length(gamma))
+PDEdr<-matrix(c(dadr),nstages^2,length(rho))
+
+dvecTdtheta<-cbind(PDEds, PDEdg, PDEdr)
+
+#################################################################
+## 4. Sensitivity and Elasticity of life expectancy
+	
+ns<-ncol(q)  		  ## number of stages
+I<-diag(1,ns)         ## Identity matrix
+Ns<-solve(I-q)        ## Fundamental matrix
+nu=apply(Ns,2,sum)    ## Life expectancy
+
+## 4.1. Sensitivity of life expectancies nu to T(i,j) (Eqn 43)
+sensnuTij<-array(0, c(ns,ns,ns)) 
+for (i in 1:ns){
+	for (j in 1:ns){
+		for (p in 1:ns){
+			sensnuTij[p,i,j]<-nu[i]*Ns[j,p]
+			}
+		}
+	}
+
+## Sensitivity/Elasticity of the life expectancy nu(1) to T(i,j) 
+sensnu1Tij<-sensnuTij[1,1:5,1:5]
+elastnu1Tij<-(q*sensnu1Tij)/nu[1] 
+
+## Sensitivity/Elasticity of nu to vital rates "Theta"
+
+## I apply the chain rule: Sens wrt lower level rate (sensnuTij: ## 5x5) is equal the sensitivity wrt to Tij times the 
+## partial derivatives of Tij wrt to vital rates theta ij 
+## (dvecTdtheta) in this case a 25 x 13 matrix. I vectorized 
+## sensnuTij to get a 25 x 1 vector. 
+
+vecSnu<-c(sensnu1Tij)		   	       ## Vectorized 25 x 1 ** 
+sensTtheta<-matrix(0,length(theta),1)  ## a 13 x 1 vector
+for (i in 1:length(theta)){
+	sensTtheta[i]<-sum(vecSnu*dvecTdtheta[,i]) ## Sens wrt "Theta"
+	}	
+elastnu1theta<-theta*sensTtheta/nu[1]   ## Elasticity wrt "Theta"
+
+
+## 4.2. ## Sensitivity/Elasticity of the remaining life expectancy  of reproductive nu(4) to T(i,j) 
+sensnu4Tij<-sensnuTij[4,1:5,1:5]
+elastnu4Tij<-(q*sensnu1Tij)/nu[4] 
+
+## Sensitivity/Elasticity of nu to vital rates "Theta" 
+
+vecSnu4<-c(sensnu4Tij)		   	       ## Vectorized 25 x 1 ** 
+sensnu4theta<-matrix(0,length(theta),1)  ## a 13 x 1 vector
+for (i in 1:length(theta)){
+	sensnu4theta[i]<-sum(vecSnu4*dvecTdtheta[,i])
+	}	
+elastnu4theta<-theta*sensnu4theta/nu[4]   ## Elasticity 
+
+results<-cbind(elastnu1theta, elastnu4theta)
+row<-c("s1", "s2", "s3", "s4", "s5", "g1", ## Vital rates names
+"g2", "g3", "g4", "r2", "r3", "r4", "r5");
+col<-c("Elastnu1", "Elastnu4")
+dimnames(results)<-list(row, col)
+
+return(results)
+}
+
+## Applyng function elastS_T.
+et1m<-elastST(m_low)
+et2m<-elastST(m_med)
+et3m<-elastST(m_high)
+et1d<-elastST(d_low) 
+et2d<-elastST(d_med)
+et3d<-elastST(d_high)
+
+## FIGURES 4 ***************************************************
+## Mode 1: Elastcity of life expectancy: S,G,R separate ********
+
+## Life expectancy ********
+msig<-cbind(et1m[1:5,1], et2m[1:5,1], et3m[1:5,1])
+mgam<-cbind(et1m[6:9,1], et2m[6:9,1], et3m[6:9,1])
+mro<-cbind(et1m[10:13,1], et2m[10:13,1], et3m[10:13,1])
+
+dsig<-cbind(et1d[1:5,1], et2d[1:5,1], et3d[1:5,1])
+dgam<-cbind(et1d[6:9,1], et2d[6:9,1], et3d[6:9,1])
+dro<-cbind(et1d[10:13,1], et2d[10:13,1], et3d[10:13,1])
+
+## Remaining life expectancy of reproductive *******
+msig4<-cbind(et1m[1:5,2], et2m[1:5,2], et3m[1:5,2])
+mgam4<-cbind(et1m[6:9,2], et2m[6:9,2], et3m[6:9,2])
+mro4<-cbind(et1m[10:13,2], et2m[10:13,2], et3m[10:13,2])
+
+dsig4<-cbind(et1d[1:5,2], et2d[1:5,2], et3d[1:5,2])
+dgam4<-cbind(et1d[6:9,2], et2d[6:9,2], et3d[6:9,2])
+dro4<-cbind(et1d[10:13,2], et2d[10:13,2], et3d[10:13,2])
+
+## Row and column names
+harvest<-c("Low", "Medium", "High")		   ## Harvest intensity
+sig<-c("s1", "s2", "s3", "s4", "s5")
+gam<-c("g1", "g2", "g3", "g4") 
+ro<-c("r2", "r3", "r4", "r5");
+
+dimnames(msig)<-dimnames(dsig)<-list(sig, harvest)
+dimnames(mgam)<-dimnames(dgam)<-list(gam, harvest)
+dimnames(mro)<-dimnames(dro)<-list(ro, harvest)
+
+dimnames(msig4)<-dimnames(dsig4)<-list(sig, harvest)
+dimnames(mgam4)<-dimnames(dgam4)<-list(gam, harvest)
+dimnames(mro4)<-dimnames(dro4)<-list(ro, harvest)
+
+
+## FIG 4.A. Life expectancy elasticity
+op<-par(mfrow=c(2,3))
+## par(mar=c(5,5,1,1))
+barplot(msig, main="", cex.lab=1.3, xlab="", ylab="", col=c("black","gray","black","black", "white"), density=c(100,100,45,15,0), angle=c(45,45,45,45,0), ylim=c(0, max(msig)+2), axis.lty=1, beside=T, las=1, legend.text=sig, args.legend=list(x="topleft", bg="white", bty="n")); box(); abline(h=0, lty=1);  
+mtext("(a) Survival", side=3, adj=0) 
+
+barplot(mgam, main="Moist", cex.lab=1.3, xlab="", ylab="", col=c("black","gray","black","white"), density=c(100,100,45,0), angle=c(45,45,45,0), ylim=c(-0.2, max(mgam)), axis.lty=1, beside=T, las=1, legend.text=gam, args.legend=list(x="bottomleft", bg="white", bty="n"));  box(); abline(h=0, lty=1); 
+mtext("(b) Growth", side=3, adj=0)
+
+barplot(mro, main="", cex.lab=1.3, xlab="", ylab="",  col=c("black","gray","black","white"), density=c(100,100,45,0), angle=c(45,45,45,0), ylim=c(0, max(mro)+0.0005), axis.lty=1, beside=T, las=1, legend.text=ro, args.legend=list(x="topright", bg="white", bty="n")); box();  abline(h=0, lty=1);  
+mtext("(c) Retrogression", side=3, adj=0) 
+
+## par(mar=c(5,5,1,1))  
+barplot(dsig, main="", cex.lab=1.3, xlab="", ylab="", col=c("black","gray","black","black", "white"), density=c(100,100,45,15,0), angle=c(45,45,45,45,0), ylim=c(0, max(dsig)+1), axis.lty=1, beside=T, las=1);  box(); abline(h=0, lty=1);
+mtext("(d) Survival", side=3, adj=0)
+
+barplot(dgam, main="Dry", cex.lab=1.3, xlab="", ylab="",col=c("black","gray","black","white"), density=c(100,100,45,0), ylim=c(0, max(dgam)), axis.lty=1, beside=T, las=1);  box(); abline(h=0, lty=1);
+mtext("(e) Growth", side=3, adj=0)
+
+barplot(dro, main="", cex.lab=1.3, xlab="", ylab="", col=c("black","gray","black","white"), density=c(100,100,45,0), angle=c(45,45,45,0), ylim=c(-0.0001, max(dro)+0.001), axis.lty=1, beside=T, las=1);  box(); abline(h=-0.0001, lty=1);
+mtext("(f) Retrogression", side=3, adj=0)
+
+par(oma=c(5, 5, 0, 0)) ## outer margin (bottom, left, top, right)
+title(xlab=expression(paste(italic("Khaya senegalensis "), "harvest intensity")), ylab="Elasticity of life expectancy to vital rates", outer=T, cex.lab=1.3)
+
+par(op)
+
+
+## Mode 2: Elastcity of life expectancy: S,G,R together *********
+
+elas_m<-cbind(et1m[,1], et2m[,1], et3m[,1])
+elas_d<-cbind(et1d[,1], et2d[,1], et3d[,1])
+
+harvest<-c("Low", "Medium", "High")		   ## Harvest intensity
+vrn<-c("s1", "s2", "s3", "s4", "s5", "g1", ## Vital rates names
+"g2", "g3", "g4", "r2", "r3", "r4", "r5");
+
+dimnames(elas_m)<-dimnames(elas_d)<-list(vrn, harvest)
+
+op<-par(mfrow=c(1,2))
+par(mar=c(5,5,1,0))
+barplot(t(elas_m), main="", cex.lab=1.3, xlab="", ylab="", col=c("black", "grey", "white"), horiz=T, xlim=c(0, max(elas_m)+2), axis.lty=2, beside=T, las=1);
+mtext("(a) Moist", side=3, adj=0)
+
+par(mar=c(5,3,1,1)) 
+barplot(t(elas_d), main="", cex.lab=1.3, xlab="", ylab="",col=c("black", "grey", "white"), horiz=T, xlim=c(0, max(elas_d)+2), axis.lty=2, beside=T, legend.text=harvest, args.legend=list(x="bottomright", bg="white", bty="n"), las=1); 
+mtext("(b) Dry", side=3, adj=0)
+
+par(oma=c(5, 5, 0, 0)) ## outer margin (bottom, left, top, right)
+title(xlab=expression(paste("Elasticity of life expectancy")), ylab="Lower level vital rates", outer=T, cex.lab=1.2)
+
+par(op)
+
+
+## FIG 4.B. Remaining Life expectancy elasticity ***********
+op<-par(mfrow=c(2,3))
+## par(mar=c(5,5,1,1))
+barplot(msig4, main="", cex.lab=1.3, xlab="", ylab="", col=c("black","gray","black","black", "white"), density=c(100,100,45,15,0), angle=c(45,45,45,45,0), ylim=c(0, max(msig4)+2), axis.lty=1, beside=T, las=1, legend.text=sig, args.legend=list(x="topleft", bg="white", bty="n")); box(); abline(h=0, lty=1);  
+mtext("(a) Survival", side=3, adj=0) 
+
+barplot(mgam4, main="Moist", cex.lab=1.3, xlab="", ylab="", col=c("black","gray","black","white"), density=c(100,100,45,0), angle=c(45,45,45,0), ylim=c(min(mgam4)-0.01, max(mgam4)+0.01), axis.lty=1, beside=T, las=1, legend.text=gam, args.legend=list(x="bottomright", bg="white", bty="n"));  box(); abline(h=0, lty=1); 
+mtext("(b) Growth", side=3, adj=0)
+
+barplot(mro4, main="", cex.lab=1.3, xlab="", ylab="",  col=c("black","gray","black","white"), density=c(100,100,45,0), angle=c(45,45,45,0), ylim=c(min(mro4), max(mro4)+0.005), axis.lty=1, beside=T, las=1, legend.text=ro, args.legend=list(x="topright", bg="white", bty="n")); box();  abline(h=0, lty=1);  
+mtext("(c) Retrogression", side=3, adj=0) 
+
+## par(mar=c(5,5,1,1))  
+barplot(dsig4, main="", cex.lab=1.3, xlab="", ylab="", col=c("black","gray","black","black", "white"), density=c(100,100,45,15,0), angle=c(45,45,45,45,0), ylim=c(0, max(dsig4)+1), axis.lty=1, beside=T, las=1);  box(); abline(h=0, lty=1);
+mtext("(d) Survival", side=3, adj=0)
+
+barplot(dgam4, main="Dry", cex.lab=1.3, xlab="", ylab="",col=c("black","gray","black","white"), density=c(100,100,45,0), ylim=c(min(dgam4)-0.02, max(dgam4)+0.02), axis.lty=1, beside=T, las=1);  box(); abline(h=0, lty=1);
+mtext("(e) Growth", side=3, adj=0)
+
+barplot(dro4, main="", cex.lab=1.3, xlab="", ylab="", col=c("black","gray","black","white"), density=c(100,100,45,0), angle=c(45,45,45,0), ylim=c(min(dro4)-0.02, max(dro4)+0.02), axis.lty=1, beside=T, las=1);  box(); abline(h=-0.0001, lty=1);
+mtext("(f) Retrogression", side=3, adj=0)
+
+par(oma=c(5, 5, 0, 0)) ## outer margin (bottom, left, top, right)
+title(xlab=expression(paste(italic("Khaya senegalensis "), "harvest intensity")), ylab="Elasticity of remaining life expectancy to vital rates", outer=T, cex.lab=1.3)
+
+par(op)
+
+
+################################################################
+######## PART III: AGE-FROM-STAGE IN MARKOVIAN ENVIRONMENT #######
+################################################################
+
+## Orou Gaoue | ogaoue@gmail.com, Dec 19, 2009
+## University of Miami, ITME
+
+## Clear all
+rm(list=ls(all=TRUE)) 
+
+###############################################################
+## Loading the packages that I need: "popbio" to be able to use the function "splitA" to split the matrix A into Q and R, and package 'Biodem", has function mtx.exp for matrix exponentiation
+
+library(popbio)
+library(Biodem) 
+library(MASS)
+library(msm)
+
+#################################################################
+# MODULE 1: Get the population dynamics and environment matrices 
+
+####### Calling the code for constant environment where the qs are
+## Importing the data file that has the matrices
+qs<-read.table("/Users/ogaoue/Desktop/Y-2011/Khaya longevity/khaya_moist_dry.txt")
+
+## Defining the matrices from the .txt file
+## Moist region matrices
+m_low<-as.matrix(qs[1:5, 1:5])
+m_med<-as.matrix(qs[11:15, 1:5])
+m_high<-as.matrix(qs[21:25, 1:5])
+
+## Dry region matrices
+d_low<-as.matrix(qs[6:10, 1:5])
+d_med<-as.matrix(qs[16:20, 1:5])
+d_high<-as.matrix(qs[26:30, 1:5])
+
+## Spliting the matrices A= Q + R and keeping Q
+q_m1<-splitA(m_low, r=1, c=-1)$T
+q_m2<-splitA(m_med, r=1, c=-1)$T
+q_m3<-splitA(m_high, r=1, c=-1)$T
+
+q_d1<-splitA(d_low, r=1, c=-1)$T
+q_d2<-splitA(d_med, r=1, c=-1)$T
+q_d3<-splitA(d_high, r=1, c=-1)$T
+
+##########################################################
+# MODULE 2: The matrices (40) of env transitions...  
+
+## Importing the .csv file that has the 40 Markov matrices
+c.mats<-read.csv("/Users/ogaoue/Desktop/Y-2011/Khaya longevity/cmatsR36.csv", header=FALSE)
+
+## Creating an array to receive the 36 matrices (3 x 3 x 36). Each ## of the 36 matrix is a 3 x 3 (3 being the number of states)
+
+ncmats<-36 
+nstates<-3
+
+envmat<-array(0, dim=c(nstates, nstates, ncmats))
+
+for (i in 1:ncmats){
+	rowid1<-((i-1)*nstates)+1
+	rowid2<-i*nstates
+	envmat[,,i]<-as.matrix(c.mats[rowid1:rowid2, 1:nstates])
+}
+
+## Stationary distribution for all the 40 Markov chains
+## That is the frequencies of each environment for each of the 40
+pismat<-matrix(0, ncmats, nstates)
+for (i in 1:ncmats){
+	pismat[i,]<-Re(eigen(envmat[,,i])$vector[,1])
+	pismat[i,]<-pismat[i,]/(sum(pismat[i,]))
+}
+
+## so for each of the 40 environments we have 40 stationary distribution of the frequencies of each harvest intensity
+
+## I've 2 sets of 3 (harvest) matrices (for dry and moist regions)
+moist<-array(0, c(5, 5, 3))
+moist[,,1]<-q_m1; moist[,,2]<-q_m2; moist[,,3]<-q_m3
+
+dry<-array(0, c(5, 5, 3))
+dry[,,1]<-q_d1; dry[,,2]<-q_d2; dry[,,3]<-q_d3
+
+
+#################################################
+## MODULE 3: THE STOCHASTIC BIOMARKOV FUNCTION ##
+ 
+## Based on Carol's MATLAB code "agefromstage_var_megamatrix.m" 
+## and R code modified from Jess's code
+
+biomarkov<-function(env.mat, popmat, maxage){	##*************
+
+## 3.1. SET UP key parts (matrices, I, e, etc)
+	
+## If you don't want to run the function but run the code directly, comment out these lines and run the code inside the fn
+## popmat<-moist
+## env.mat<-envmat[,,1]
+## maxage<-100
+
+## Defining nstages and nstates
+nstages<-ncol(popmat[,,1])
+nstates<-ncol(env.mat)
+
+## Environmental matrix cmats ##	
+pis<-Re(eigen(env.mat)$vector[,1])
+pis<-pis/(sum(pis))
+	
+## Population dynamics matrices qs ##
+qs<-array(0, dim=c(nstages,nstages,nstates))
+for (i in 1:nstates){   
+	qs[,,i]<-popmat[,,i]
+}
+
+## The Megamatrices m ##
+ckron<-kronecker(env.mat, diag(nstages)) ## ckron= C x I
+matrix2<-matrix(0,nstates*nstages,nstates*nstages)
+
+for (i in 1:nstates){   
+	rowind1=nstages*(i-1)+1
+	rowind2=nstages*i
+	matrix2[c(rowind1:rowind2),c(rowind1:rowind2)]<-qs[,,i]
+} ## matrix 2 is a SK x SK matrix with qs in the diag and zero matrices elsewhere.
+
+m<-matrix2%*%ckron  ## matrix in eq. 29 in carol's paper
+					## m = (C x I) x matrix2
+
+m[(5*10):(5*11)]
+
+## Cheking: checkm should be exactly 0's
+(checkm<-(qs[,,2]*env.mat[2,1])-m[(nstages+1):(2*nstages), 1:nstages])
+
+###########################################################
+## Set up I, I_tilda, e, e_tildas, ea_tildas, qa_tildas. ##
+## These are going to be used in the fundamental matrix eqn for markovian environment.
+
+## Identity matrix of dimension K x K
+I=diag(nstages);            
+
+## Itilda: A KS x KS identity matrix
+Itilda=diag(nstages*nstates)    # eqn 24
+
+## Array to receive eatildas
+eatildas=array(dim=c(nstates*nstages,nstages,nstates)); 
+eatildas[,,]<-0
+for (i in 1:nstates){ 
+	eatildas[,,i]=Itilda[,((i-1)*nstages+1):(nstages*i)];
+}              # Array of eatilidas, eqn 25
+               # All rows, columns read from Itilda 1-8, 9-16,
+               #                                    17-24, etc
+
+## Array to receive qatildas               
+qatildas=array(dim=c(nstates*nstages,nstages,nstates)); 
+qatildas[,,]<-0
+for (i in 1:nstates){ 
+	qatildas[,,i]=matrix2[,((i-1)*nstages+1):(nstages*i)]
+}                            # Array of qatildas, eqn 26
+
+etilda=array(0, dim=c(nstates*nstages,nstages)); # Matrix for etilda, only one not an array
+## etilda[,]<-0
+for (i in 1:nstates) { 
+	etilda[((i-1)*nstages+1):(nstages*i),]=diag(nstages);
+}                            # etilda, eqn 27
+
+###############################################################
+## 3.2. FUNDAMENTAL MATRIX = I + etilda'(Itilda-m)^-1 qatildas
+
+Ns_markov=array(dim=c(nstages,nstages,nstates)); ## Array of Ns
+Ns_markov[,,]<-0
+
+for (i in 1:nstates){ 
+	Ns_markov[,,i]=I+t(etilda)%*%(ginv(Itilda-m))%*%qatildas[,,i]; 	# eqn 30, conditional on initial state 1
+}  ## Na = I + etilda'(Itilda - m)^-1 qatilda
+
+## Average over all initial states, we weigth Ns by the stationary probabilities pis (the expected frequencies for each state) to get the fundamental matrix
+Nbar_markov=rep(0,nstages);
+for (i in 1:nstates) { 
+	Nbar_markov=Nbar_markov+pis[i]*Ns_markov[,,i]; 
+}                         # eqn 29, weight each 
+                         
+#############################################################
+## 3.3. Stochastic life expectancy: lifeexp, column sums
+lifeexp_markov=matrix(0,nstates,nstages); # Set up array
+for (i in 1:nstates){ 
+	lifeexp_markov[i,]=apply(Ns_markov[,,i],2,sum);
+}
+
+## Mean Stochastic life expectancy: lifeexp, column sums
+lifeexp_bar_markov=apply(Nbar_markov,2,sum);
+
+## OBS: some values in the fundamental matrix are negative but too small (10^-16) so that is almost 0. No problem!
+
+#### output variables of interest from module 3.3
+##    m
+##    Ns_markov
+##    Nbar_markov
+##    lifeexp_markov (a 3 x 5 matrix)
+##	  lifeexp_bar_markov (mean life expectancy) (a 1 x 5 matrix)
+###############################################################
+
+
+###############################################################
+# 3.4. The VARIANCE of the FUNDAMENTAL MATRIX
+###############################################################
+## Set up for Ntildas array
+Ntildas=array(dim=c(nstages,nstages,nstates)); 
+for (i in 1:nstates) { 
+	Ntildas[,,i]=t(etilda)%*%m%*%(solve(Itilda-m))%*%eatildas[,,i]; # eqn 30, one for each initial state
+}
+
+# Set up for Nhat array
+Nhat=array(dim=c(nstages,nstages,nstates,nstates)); 
+for (a in 1:nstates){
+   for (b in 1:nstates){
+	Nhat[,,b,a]=t(eatildas[,,b])%*%m%*%(solve(Itilda-m))%*%eatildas[,,a]; # eqn 31, one for each a,b
+   }
+}
+
+# now for the expectation of the nu_ij^2's given initial 
+# environment a
+# eqn32
+# try to do it for one initial state, a=1....
+# start with the second term of eqn. 32
+# diag(diag(Ntildas(:,:,b))*Nhat(:,:,b,a)
+#   
+# set up arrays to calculate the variances conditional on each 
+# initial state
+
+secondterm=array(0, dim=c(nstages,nstages,nstates)); 
+J=array(0, dim=c(nstages,nstages,nstates)); 
+Ysq_markov=array(0, dim=c(nstages,nstages,nstates)); Yvar_markov=array(0, dim=c(nstages,nstages,nstates));
+Ycv_markov=array(0, dim=c(nstages,nstages,nstates));
+
+for (i in 1:nstates) { 
+    sumterm=array(0, dim=c(nstages,nstages));
+    	
+    for (b in 1:nstates){ 
+    	sumterm=diag(diag(Ntildas[,,b]))%*%Nhat[,,b,i]+sumterm;
+    }    
+    
+secondterm[,,i]=sumterm;
+## secondterm(:,:,i)=2*secondterm(:,:,i)  
+## I think this is an error because this is now multiplied by 2 as a component of the sum J; check this with T
+ 
+J[,,i]= secondterm[,,i]+  #...
+         diag(diag(Ns_markov[,,i]-I)) + #...
+         diag(diag(Ntildas[,,i]))%*%qs[,,i];
+
+Ysq_markov[,,i]=Ns_markov[,,i] + 2*J[,,i]; 
+Yvar_markov[,,i]=Ysq_markov[,,i]-(Ns_markov[,,i]*Ns_markov[,,i]); 
+Ycv_markov[,,i] = sqrt(abs(Yvar_markov[,,i]))/Ns_markov[,,i]; 
+
+##***** I added abs() because some values of Yvar_markov are negative and the sqrt yield error. Orou, April 8, 2010. Why would the variance even be negative? -- April 12, 2010: Actually the elements that are negative are almost = 0 (=10^-15) **********
+
+}
+
+
+#################################################################
+# 3.5. VARIANCE of LIFE EXPECTANCY: lifeexpvar: equations 
+# developed by T  in 6july05 notes
+###############################################################
+lifeexpvar_markov=matrix(0,nstates,nstages);# set up matrix 
+lifeexpcv_markov=matrix(0,nstates,nstages);
+lifeexpsd_markov=matrix(0,nstates,nstages);
+
+secondthing=array(0, dim=c(nstages,nstages,nstates));
+JJ=array(0, dim=c(nstages,nstages,nstates)); ## 5 x 5 x 3
+KK=array(0, dim=c(nstages,nstages,nstates)); ## 5 x 5 x 3
+Etasq_markov=matrix(0,nstates,nstages); ## K x 5 matrix
+
+# expectation of squares of eta  *****************************
+for (i in 1:nstates){
+	
+	sumterm2<-array(0, dim=c(nstages,nstages));
+	for (b in 1:nstates){
+    	sumterm2<-Ntildas[,,b]%*%Nhat[,,b,i]+sumterm2
+    	}    ## part of eqn 33: Sum(N_b*N_ba)
+  
+secondthing[,,i]<-sumterm2; 
+
+JJ[,,i]=secondthing[,,i]+Ns_markov[,,i]+Ntildas[,,i]%*%qs[,,i];
+KK[,,i]=Ns_markov[,,i]+2*JJ[,,i];   
+
+Etasq_markov[i,]=apply(KK[,,i],2,sum); 
+
+## Jess's comments: I think the equation in the notes was wrong as etilda' is not a row of 1's...it is a block matrix of identity matrices...[I I I I];
+
+## ok... now on the the variance and Cv
+    lifeexpvar_markov[i,]=Etasq_markov[i,]-apply(Ns_markov[,,i],2,sum)*apply(Ns_markov[,,i],2,sum);
+    lifeexpsd_markov[i,]= sqrt(lifeexpvar_markov[i,]); # SD
+    lifeexpcv_markov[i,]=(sqrt(lifeexpvar_markov[i,]))/apply(Ns_markov[,,i],2,sum);
+}
+
+##***** Some values (row 2:3) of lifeexpvar_markov are 0 and the sqrt yield error. This is comming from JJ[[2:3]] being matrices of 0*** Orou April 8, 2010; Orou April 20, 2010: Actually, that was not the problem. The problem was that we did not build the "lifeexpsd_markov" empty matrix first and we were trying to fit in the values.
+
+
+###############################################################
+## 3.6. VARIANCE of AVERAGE fundamental matrix
+## used the iid case and substituted the markov N's
+
+# finally equation 20, averaging over all initial conditions
+thirdterm=0;
+for (i in 1:nstates){     
+	thirdterm=thirdterm + pis[i]*(Ns_markov[,,i]*Ns_markov[,,i]);  			#eqn 20
+}
+
+Ybar_var_markov=2*diag(diag(Nbar_markov))%*%Nbar_markov - Nbar_markov - thirdterm;
+Ybar_cv_markov = sqrt(abs(Ybar_var_markov))/Nbar_markov; # ******
+
+### Orou, April 19, 2010. I added abs to avoid geting NaNs for the sqrt when the values are almost 0 but negative ***********
+
+
+##################################################################
+## output variables of interest from module 3.4-3.6  
+## (fundamental matrix variance)
+##
+## lifeexpvar_markov
+## lifeexpsd_markov
+## lifeexpcv_markov
+## 
+## Ybar_var_markov
+## Ybar_cv_markov
+################################################################
+
+
+
+###############################################################
+## 3.7. Survivorship and hazard rates  7july05 notes 
+###############################################################
+
+ages=1:maxage; # A vector from one to max age
+Thats=array(dim=c(nstages,nstages,nstates,maxage));
+Thats[,,,]<-0
+
+surv_allstages=array(dim=c(nstages,nstates,maxage));
+surv_allstages[,,]<-0
+
+## Jess's way **************
+tmp<-c()
+for (a in 1:nstates){     
+	for (i in 1:maxage) { 
+       if (i==1) tmp<-diag(length(m[,1]))
+       if (i>1) tmp<-tmp%*%m
+       Thats[,,a,i]= t(etilda)%*%(tmp)%*%qatildas[,,a]; 
+       surv_allstages[,a,i]<-apply(Thats[,,a,i],2,sum) 
+    }
+}   ## This will yield maxage (100) nstages x nstages matrices
+
+## Orou's way: Feb 21, 2010: **************
+## To do the same thing, I think we can just use the matrix exponentiation function to write directly etilda'*m^(i-1)*qatilda 
+
+Thatso=array(0, dim=c(nstages,nstages,nstates,maxage));
+surv_allstageso=array(0,dim=c(nstages,nstates,maxage));
+for (a in 1:nstates){     
+	for (i in 1:maxage){
+	Thatso[,,a,i]<-t(etilda)%*%mtx.exp(m,(i-1))%*%qatildas[,,a];
+	surv_allstageso[,a,i]<-apply(Thatso[,,a,i],2,sum) 
+    }
+} 
+
+## Conclusion:
+## I checked the two methods and they yield the same results.
+
+##################################################################
+## 3.8. AGE-SPECIFIC MORTALITY TREJECTORY
+
+(chek=surv_allstages[,2,10]-apply(Thats[,,2,10],2,sum)) ## Should give 0s
+
+surv_1=surv_allstages[1,,]; ## get the element for those that 							## start in stage 1
+#surv=squeeze(surv_1); 	# age-specific survivorships 
+                   		# rows are the states and the columns are 						the ages, so to reference surv 						for state 1...surv(1,:)
+        				# for state 2...surv(2,:)
+surv=surv_1
+### matplot(t(surv_1),type="l") ####*********
+## I comment out the figure, will do it later.
+
+shift_surv=surv[,2:length(surv[1,])]; 	#lxplus1
+mu = log(shift_surv) - log(surv[,1:(length(shift_surv[1,]))]); # see next step, too!
+mu_markov = -mu;
+        # mu for state 1 ...mu(1,:)
+        # mu for state 2 ...mu(2,:)
+        
+
+
+###############################################################
+## 3.9. Distribution of age at death and plateau ##############
+### Orou, Feb 19, 2010 (in progress): Continuing Carol's code
+
+###****************
+
+deaths<-surv[,1:length(shift_surv[1,])] - shift_surv;
+sumdeath<-apply(deaths, 1, sum); ## summing each row
+
+## To divide each elements by the corresponding row sum
+deaths_markov<-matrix(0, nstates, maxage-1)
+
+for (i in 1:nstates){
+	deaths_markov[i,]<-deaths[i,]/sumdeath[i] 
+}  ## this to divide each element by the corresponding row sum
+
+## Hazard and quasi-stationary distribution
+lams_markov<-matrix(0,1,1)
+slope_markov<-matrix(0,1,1)
+us_markov<-matrix(0,nstages,nstates)
+vs_markov<-matrix(0,nstages,nstates)
+zs_markov<-matrix(0,1,nstates)
+
+
+library(popbio)
+eig<-eigen.analysis(m) ### ************
+lams_markov<-eig$lambda
+v<-eig$repro.value
+u<-eig$stable.stage
+
+us_markov<-matrix(u, nstages, nstates)
+u_markov<-apply(us_markov, 1, sum)
+vs_markov<-matrix(v, nstages, nstates)
+
+## The stochastic mortality plateau
+plateau_markov<-slope_markov<--log(lams_markov)
+
+##################################################################
+## output variables of interest from module 3.7- 3.10  
+##
+## 	Thats
+##  surv_allstages
+##	shift_surv
+##	mu_markov
+##	lams_markov
+##	plateau_markov
+## 	death_markov
+## 	us_markov 
+##	vs_markov
+##	zs_markov
+################################################################
+
+return(list(lifeexp_markov=lifeexp_markov, lifeexpcv_markov=lifeexpcv_markov, lifeexp_bar_markov=lifeexp_bar_markov, mu_markov=mu_markov, plateau_markov=plateau_markov, Ns_markov=Ns_markov, Nbar_markov=Nbar_markov, surv_1=surv_1))
+
+} #### end of the Function ********
+
+
+
+#################################################################
+## MODULE 4. Applying the Function
+
+## Creating matrices to receive results
+lifeexp_m<-lifeexp_d<-array(0, c(3, 5, 36))
+lifeexpcv_m<-lifeexpcv_d<-array(0, c(3, 5, 36))
+lifeexp_bar_m<-lifeexp_bar_d<-array(0, c(1, 5, 36)) 
+surv1_m<-surv1_d<-array(0, c(3, 100, 36))
+mu_m<-mu_d<-array(0, c(3, 99, 36))
+plateau_m<-plateau_d<-vector("numeric", 36)
+
+for (i in 1: 36){
+	m_moist<-biomarkov(envmat[,,i], moist, maxage=100)
+	
+	lifeexp_m[,,i]<-m_moist$lifeexp_markov
+	lifeexpcv_m[,,i]<-m_moist$lifeexpcv_markov
+	lifeexp_bar_m[,,i]<-m_moist$lifeexp_bar_markov
+	mu_m[,,i]<-m_moist$mu_markov
+	surv1_m[,,i]<-m_moist$surv_1
+	plateau_m[i]<-m_moist$plateau_markov
+	
+	m_dry<-biomarkov(envmat[,,i], dry, maxage=100)
+	
+	lifeexp_d[,,i]<-m_dry$lifeexp_markov
+	lifeexpcv_d[,,i]<-m_dry$lifeexpcv_markov
+	lifeexp_bar_d[,,i]<-m_dry$lifeexp_bar_markov
+	mu_d[,,i]<-m_dry$mu_markov
+	surv1_d[,,i]<-m_dry$surv_1
+	plateau_d[i]<-m_dry$plateau_markov
+
+}
+
+## The mean return time to high harvest for the 36 environment matrix ordered from 1 to 36. 
+
+rthigh<-c(1.6,	1.2857,	1.2308,	1.24,	1.2857,	1.1114,	2.5385,	7,	8.5984,	 2,	2.0015,	2.0005,	2.001,	1.1111,	1.1111,	99.1179, 2.6316, 2.6757, 1.4776,	1.4292,	1.375,	4.5056,	2.5084,	2.6251,	2.659,	2.3354,	1.7542,	1.3768,	1.2264,	1.57, 1.2815,	1.2226,	1.25, 1.2468, 1.1636, 1.1408)
+
+
+#################################################################
+######### PART II: STOCHASTIC AGE AT FIRST REPRODUCTION #########
+#################################################################
+
+### Based on Appendix B of Metcalf et al. 2009 Ecology 90:2766-78
+### and Caswell 2001: p.114-125 Age at maturity in Constant env.
+### Orou G. Gaoue, April 13, 2010
+
+### Functions arguments: 
+### (a) Tmat: an array of the transition matrices representing each of the environments, (b) env.mat: the environment matrix (the Markov chain that define the probability of selecting the transition matrix), and (c) Kvec: a vector that specifies the columns K of the megamatrix "m" that represent the first reproductive stages that will be turned into "reproduce-before-dying" absorbing state.
+
+### Function outputs: The mean age at first reproduction (time to reach first reproductive stage) for each of the environments in the Markov chain.
+
+## clear all
+## rm(list=ls(all=TRUE))
+
+## The function #################################################
+stochrep<-function(Tmat, env.mat, Kvec){
+
+## If you are not running the function then you can comment out these lines and specify your parameters.
+	
+## Tmat<-moist
+## env.mat<-envmat[,,1]
+## Kvec<-c(4,9,14)
+
+## 1. Defining nstages and nstates
+nstages<-ncol(Tmat[,,1])
+nstates<-ncol(env.mat)
+
+## 2. Population dynamics matrices qs ##
+qs<-array(0, dim=c(nstages,nstages,nstates))
+for (i in 1:nstates){   
+	qs[,,i]<-Tmat[,,i]
+}
+
+## 3. The Megamatrices m ##
+ckron<-kronecker(env.mat, diag(nstages)) ## ckron= C x I
+matrix2<-matrix(0,nstates*nstages,nstates*nstages)
+
+for (i in 1:nstates){   
+	rowind1=nstages*(i-1)+1
+	rowind2=nstages*i
+	matrix2[c(rowind1:rowind2),c(rowind1:rowind2)]<-qs[,,i]
+} ## matrix 2 is a SK x SK matrix with qs in the diag and zero matrices elsewhere.
+
+m<-matrix2%*%ckron  ## matrix in eq. 29 in carol's paper
+					## m = (C x I) x matrix2
+	
+## 4. Defining Itilda, etilda
+Itilda=diag(nstages*nstates)  ## KS x KS identity matrix
+
+etilda=array(0, dim=c(nstates*nstages,nstages)); 
+for (i in 1:nstates) { 
+	etilda[((i-1)*nstages+1):(nstages*i),]=diag(nstages);
+}  ## A K block of S x S identity matrix used to sum megamatrix
+
+## 5. Building "mhat"
+## The reproductive stages for Khaya in the megamatrix "m" are in the K=3 columns 4, 9 and 14 (Kvec). We are going to replace them by column vector of zero to get "mhat"
+
+## Kvec<-c(4,9,14)  ###******
+m[,Kvec]<-0
+mhat<-m
+ 
+## 6. Building Nhat, eqn [B.1]: 
+## That is N=(I-m)^-1. However for a Markovian environment, I was expecting eqn (30) from Tulja & Horvitz 2006: Na= I + t(etilda)solve(Itilda - m)qatilda.
+
+Nhat<-solve(Itilda - mhat)
+
+## Nhat<- I + t(etilda)%*%solve(Itilda - mhat)%*%qatilda
+
+## 7. Building "d_hat", a 2 x SK matrix 
+## "dhat" is made of two row vectors "dhat1" and "dhat2". ## 
+
+## 7.1. "dhat1" contains the one-time probabilities of death and will be obtained by substracting the column sum of the new megamatrix mhat from 1. 
+
+dhat1<- rep(1, nstages*nstates) - apply(mhat, 2, sum)
+dhat1[Kvec]<-0 ## We turned the K columns of dhat1 to 0 from 1
+
+## The K columns of dhat1 are equal 1 and the other elements are the mortality probabilities
+
+## 7.2. "dhat2" has zero everywhere except from the K columns that have 1
+
+dhat2<-rep(0, nstages*nstates)
+dhat2[Kvec]<-1  ## We turned the K columns of dhat2 to 1 from 0.
+
+dhat<-rbind(dhat1, dhat2)
+
+## 8. Building "bhat", eqn [B.2]
+bhat<-dhat%*%Nhat
+
+## The second row "bhat2" of "bhat" represent the probabilies of absorption into the reproductive stage s before death.
+
+bhat2<-bhat[2,]
+
+## 9. None of the value of bhat2 is 0 so we can get the inverse of diag(bhat2) without problem. If this was not the case, as suggested by Caswell (2001: 125), we will replace the 0 by arbitrary values 1
+
+id<-bhat2==0
+bhat2[id]<-1
+
+## 10. Conditional transition matrix "mc", eqn [B.3] modified. 
+## mc = diag(bhat2)*mhat*diag(bhat2)^-1 similar to Caswell (2001), eqn 5.53
+
+mc<-diag(bhat2, length(bhat2))%*%mhat%*%solve(diag(bhat2, length(dhat2)))
+
+## Because individuals in the stages beyond the first reproductive stage already reproduce, we'll ignore their mc values as suggested by Caswell (2001) and implemented for the age at first reproduction in constant environments.
+
+mc[,c(5, 10, 15)]<-0
+
+## 11. The sum of the fundamental matrix will give us the mean passage time, here, the time to reproductive stage "rep.age"
+
+Nhatc<-solve(Itilda-mc)
+Nhati<-array(0, dim=c(nstages*nstates, nstages, nstates))
+rep.age<-matrix(0, nstates, nstages)
+
+for (i in 1:nstates) { 
+	Nhati[,,i]<-Nhatc[,((i-1)*nstages+1):(nstages*i)];
+	rep.age[i,]<-apply(Nhati[,,i], 2, sum);
+	} 
+
+rep.age
+
+## 12. The mean age at maturity is the first column of rep.age[,i] given that you are born in environment i
+
+rep.age1<-rep.age[,1]
+return(t(rep.age1))
+
+} ####### end of the function **********
+
+################################################################
+### Application of the Function
+repmoist<-repdry<-matrix(0, 36, 3)
+
+for (i in 1:36){
+	repmoist[i,]<-stochrep(moist, envmat[,,i], Kvec=c(4,9,14))
+	repdry[i,]<-stochrep(dry, envmat[,,i], Kvec=c(4,9,14))
+}
+
+
+###############################################################
+				#### PART III:  FIGURES ######
+###############################################################
+
+## FIGURE 5. ***********
+
+## 1. Life expectancy (of seedlings) for cohort starting at low, med and high intensity of harvest.
+
+## 1.1.- In the moist region ### ******
+## I made a matrix with the life expectancies for each of the 3 harvest environments and the return time to high harvest.
+lifeexp_matm<-matrix(c(rthigh,lifeexp_m[1,1,], lifeexp_m[2,1,], lifeexp_m[3,1,]), 4, 36, byrow=T)
+
+## I order the matrix that I obtained wrt the return time; this just to facilitate the ploting.
+osm<-order(lifeexp_matm[1,])
+lifeexp_matm<-t(lifeexp_matm)[osm,]
+
+op<-par(mfrow=c(2,2))
+## And I plot
+par(mar=c(5,5,1.5,1)) ## (bottom, left, top, right)
+plot(lifeexp_matm[,1], lifeexp_matm[,2], main="Moist", xlab="", ylab="Stochastic life expectancy (yr)", las=1, ylim=c(0, 15), type="l",cex.lab=1.3, lty=1,lwd=1)
+points(lifeexp_matm[,1], lifeexp_matm[,3], type="l", lty=2, lwd=1)
+points(lifeexp_matm[,1], lifeexp_matm[,4], type="l", lty=3, lwd=1)
+
+mtext("(a)", side=3, adj=0)
+
+legend(60, 15, c("Low", "Medium", "High"), col=c("black", "black", "black"), lty=c(1,2,3), lwd=1, bty="n")
+
+
+## 1.2. - In the dry region ###********
+## I made a matrix with the life expectancies for each of the 3 harvest environments and the return time to high harvest.
+lifeexp_matd<-matrix(c(rthigh,lifeexp_d[1,1,], lifeexp_d[2,1,], lifeexp_d[3,1,]), 4, 36, byrow=T)
+
+## I order the matrix that I obtained wrt the return time; this just to facilitate the ploting.
+osd<-order(lifeexp_matd[1,])
+lifeexp_matd<-t(lifeexp_matd)[osd,]
+
+## And I plot
+par(mar=c(5,5,1.5,1)) ## (bottom, left, top, right)
+plot(lifeexp_matd[,1], lifeexp_matd[,2], main="Dry", xlab="", ylab="", ylim=c(0, 15), type="l", las=1, lty=1, cex.lab=1.3,lwd=1)
+points(lifeexp_matd[,1], lifeexp_matd[,3], type="l", lty=2, lwd=1)
+points(lifeexp_matd[,1], lifeexp_matd[,4], type="l", lty=3, lwd=1)
+mtext("(b)", side=3, adj=0)
+## par(op)
+
+## ------- inset begins
+library(e1071)
+op1 <- par(fig=c(.63, .98,.65,.98), new=TRUE)  #(width=0.4, height=0.4, x=0.8, y=0.2)
+
+plot(lifeexp_matd[,1], lifeexp_matd[,2], main="", xlab="", ylab="", ylim=c(min(lifeexp_matd[,2:4]), max(lifeexp_matd[,2:4])), type="l", las=1, lty=1, lwd=1, cex.axis=0.6, axes=T, bty="n")
+points(lifeexp_matd[,1], lifeexp_matd[,3], type="l", lty=2, lwd=1)
+points(lifeexp_matd[,1], lifeexp_matd[,4], type="l", lty=3, lwd=1)
+
+# par(op1, new=T)
+## --------- end of inset
+
+## 2. Stochastic age at maturity ### *******
+## op<-par(mfrow=c(1,2))
+## for cohort starting at low, med and high intensity of harvest.
+
+## 2.1.- In the moist region ### ******
+## I made a matrix with the life expectancies for each of the 3 harvest environments and the return time to high harvest.
+rep_matm<-matrix(c(rthigh,repmoist[,1], repmoist[,2], repmoist[,3]), 4, 36, byrow=T)
+
+## I order the matrix that I obtained wrt the return time; this just to facilitate the ploting.
+osm<-order(rep_matm[1,])
+rep_matm<-t(rep_matm)[osm,]
+
+## And I plot
+par(fig=c(0,.5,0,.5), new=T)
+#par(mar=c(5,5,1,1)) ## (bottom, left, top, right)
+plot(rep_matm[,1], rep_matm[,2], main="", xlab="", ylab="Stochastic age at maturity (yr)", las=1, ylim=c(15, 40), type="l", lty=1, cex.lab=1.3, lwd=1)
+points(rep_matm[,1], rep_matm[,3], type="l", lty=2, lwd=1)
+points(rep_matm[,1], rep_matm[,4], type="l", lty=3, lwd=1)
+
+mtext("(c)", side=3, adj=0)
+
+## legend(40, 22, c("Low", "Med", "High"), col=c("black", "black", "black"), lty=c(1,2,3), lwd=2, bty="n")
+
+
+## 2.2. - In the dry region ###********
+
+## I made a matrix with the life expectancies for each of the 3 harvest environments and the return time to high harvest.
+rep_matd<-matrix(c(rthigh,repdry[,1], repdry[,2], repdry[,3]), 4, 36, byrow=T)
+
+## I order the matrix that I obtained wrt the return time; this just to facilitate the ploting.
+osd<-order(rep_matd[1,])
+rep_matd<-t(rep_matd)[osd,]
+
+par(fig=c(0.5,1,0,.5), new=T)## And I plot
+#par(mar=c(5,5,1,1))
+plot(rep_matd[,1], rep_matd[,2], main="", xlab="", ylab="", ylim=c(15,40), type="l", las=1, lty=1, cex.lab=1.3, lwd=1)
+points(rep_matd[,1], rep_matd[,3], type="l", lty=2, lwd=1)
+points(rep_matd[,1], rep_matd[,4], type="l", lty=3, lwd=1)
+
+mtext("(d)", side=3, adj=0)
+
+par(oma=c(5, 5, 0, 0)) ## outer margin (bottom, left, top, right)
+title(xlab="Mean return time to high harvest (yr)", ylab="", outer=T, cex.lab=1.2)
+
+par(op)
