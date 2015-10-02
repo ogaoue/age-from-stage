@@ -1,4 +1,4 @@
-## Age from Stage Model
+## R Script for Age from Stage matrix projection Model
 
 This script accompanied Gaoue OG, Horvitz CC, Ticktin T, Steiner U, Tuljapurkar S (2013). Defoliation and bark harvest alter the life history traits of a Tropical tree. Journal of Ecology 101, 1563–1571
 
