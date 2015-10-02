@@ -1,4 +1,6 @@
-
+## This code has two parts. The first part implement the deterministic age-from-stage model and the 
+sensitivity and elasticity analysis for life expectancy. The second part developped the stochastic 
+age-from-stage model.
 #######################################################
 ## PART I -- Age-from-stage in constant environment ###
 #######################################################
